@@ -2,8 +2,10 @@
 from __future__ import annotations
 import argparse
 import asyncio
+import grp
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -25,10 +27,20 @@ def _read_cfg(): return load_config(CONFIG_PATH)
 def _save_cfg(cfg):
     Path(CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f: json.dump(cfg, f, indent=2)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
     os.replace(tmp, CONFIG_PATH)
-    try: os.chmod(CONFIG_PATH, 0o600)
-    except OSError: pass
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+        uid = pwd.getpwnam("veepn").pw_uid
+        gid = grp.getgrnam("veepn").gr_gid
+        os.chown(CONFIG_PATH, uid, gid)
+    except (OSError, KeyError):
+        # Non-root callers may not be allowed to change ownership.  The
+        # write itself has already completed; the service account ownership
+        # is restored whenever the CLI runs with sufficient privileges.
+        pass
 
 
 def _systemctl(*args, check=False):
