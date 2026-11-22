@@ -21,6 +21,8 @@ if [[ "${1:-}" != "--upgrade" ]]; then
   if [[ ! -d "$APP_DIR/.git" ]]; then
     rm -rf "$APP_DIR"
     git clone --depth 1 "$REPO" "$APP_DIR"
+  else
+    git -c safe.directory="$APP_DIR" -C "$APP_DIR" pull --ff-only
   fi
 else
   if [[ $EUID -ne 0 ]]; then
