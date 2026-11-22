@@ -83,6 +83,31 @@ exec "$APP_DIR/.venv/bin/python" -m vpeen.cli "\$@"
 SCRIPT
 chmod 0755 /usr/local/bin/veepn
 
+cat >/usr/local/bin/veepn-uninstall <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$APP_DIR"
+SERVICE_USER="$SERVICE_USER"
+
+systemctl stop veepn.service 2>/dev/null || true
+systemctl disable veepn.service 2>/dev/null || true
+rm -f /etc/systemd/system/veepn.service
+systemctl daemon-reload
+rm -f /usr/local/bin/veepn
+
+read -r -p "Delete configuration, cached credentials, and logs too? [y/N] " answer
+if [[ "\$answer" =~ ^[Yy]$ ]]; then
+  rm -rf /etc/veepn /var/lib/veepn /var/log/veepn
+  userdel "$SERVICE_USER" 2>/dev/null || true
+else
+  echo "Configuration and data were preserved in /etc/veepn, /var/lib/veepn, and /var/log/veepn."
+fi
+rm -rf "$APP_DIR"
+rm -f /usr/local/bin/veepn-uninstall
+echo "VPeeN uninstalled."
+SCRIPT
+chmod 0755 /usr/local/bin/veepn-uninstall
+
 chown -R "$SERVICE_USER:$SERVICE_USER" \
   "$APP_DIR" /var/lib/veepn /var/log/veepn
 
