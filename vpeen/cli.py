@@ -88,6 +88,19 @@ def configure():
     _save_cfg(cfg); print("Saved. Restart the service to apply changes.")
 
 
+def uninstall():
+    print("This will stop VPeeN and remove the service, program files, and wrapper.")
+    answer = input("Type UNINSTALL to continue: ").strip()
+    if answer != "UNINSTALL":
+        print("Cancelled.")
+        return
+    cmd = "/usr/local/bin/veepn-uninstall"
+    if not os.path.exists(cmd):
+        print("Uninstall helper is missing. Reinstall with the updated install.sh first.")
+        return
+    subprocess.run([*_sudo_prefix(), "bash", cmd])
+
+
 def update():
     if not os.path.isdir(os.path.join(APP_DIR, ".git")):
         print("Source checkout not found; reinstall from the official installer."); return
@@ -103,7 +116,7 @@ def menu():
         print("1) Status       2) Start        3) Stop")
         print("4) Restart      5) Locations    6) Select location")
         print("7) Ports/bind   8) Test         9) Logs")
-        print("u) Update       0) Exit")
+        print("u) Update       x) Uninstall    0) Exit")
         try: choice = input("\nveepn> ").strip().lower()
         except (EOFError, KeyboardInterrupt): print(); return 0
         try:
@@ -119,6 +132,7 @@ def menu():
             elif choice == "8": asyncio.run(test_region(_read_cfg().get("region")))
             elif choice == "9": subprocess.run([*_sudo_prefix(), "journalctl", "-u", SERVICE, "-n", "80", "--no-pager"])
             elif choice == "u": update()
+            elif choice == "x": uninstall()
             elif choice == "0": return 0
         except Exception as exc: print(f"Error: {exc}")
 
@@ -126,7 +140,7 @@ def menu():
 def build_parser():
     p = argparse.ArgumentParser(prog="veepn", description="Manage VPeeN on a Linux VPS")
     sub = p.add_subparsers(dest="cmd")
-    for cmd in ("start", "stop", "restart", "status", "update", "locations", "configure", "logs"): sub.add_parser(cmd)
+    for cmd in ("start", "stop", "restart", "status", "update", "uninstall", "locations", "configure", "logs"): sub.add_parser(cmd)
     t = sub.add_parser("test"); t.add_argument("region", nargs="?", default="optimal")
     s = sub.add_parser("select"); s.add_argument("region")
     return p
@@ -139,6 +153,7 @@ def main(argv=None):
     if args.cmd in ("start", "stop", "restart"): return 0 if _service(args.cmd) else 1
     if args.cmd == "status": show_status(); return 0
     if args.cmd == "update": update(); return 0
+    if args.cmd == "uninstall": uninstall(); return 0
     if args.cmd == "locations": asyncio.run(locations()); return 0
     if args.cmd == "test": asyncio.run(test_region(args.region)); return 0
     if args.cmd == "configure": configure(); return 0
