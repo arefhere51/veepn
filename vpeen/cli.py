@@ -104,7 +104,7 @@ def uninstall():
 def update():
     if not os.path.isdir(os.path.join(APP_DIR, ".git")):
         print("Source checkout not found; reinstall from the official installer."); return
-    cmd = [*_sudo_prefix(), "git", "-C", APP_DIR, "pull", "--ff-only"]
+    cmd = [*_sudo_prefix(), "git", "-c", f"safe.directory={APP_DIR}", "-C", APP_DIR, "pull", "--ff-only"]
     if subprocess.run(cmd).returncode == 0:
         subprocess.run([*_sudo_prefix(), "bash", os.path.join(APP_DIR, "install.sh"), "--upgrade"])
         _service("restart")
