@@ -1,0 +1,205 @@
+"""Shared helpers: colored console output, state persistence, misc utils."""
+import json
+import os
+import stat
+import sys
+import tempfile
+import threading
+import time
+
+
+class C:
+    """ANSI color codes."""
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    GREY = "\033[90m"
+
+
+def info(msg):
+    print(f"{C.CYAN}[i]{C.RESET} {msg}")
+
+
+def ok(msg):
+    print(f"{C.GREEN}[+]{C.RESET} {msg}")
+
+
+def warn(msg):
+    print(f"{C.YELLOW}[!]{C.RESET} {msg}")
+
+
+def err(msg):
+    print(f"{C.RED}[x]{C.RESET} {msg}")
+
+
+def dim(msg):
+    print(f"{C.GREY}{msg}{C.RESET}")
+
+
+def banner():
+    from . import __version__
+    v = ".".join(__version__.split(".")[:2])
+    print(f"""{C.BOLD}{C.MAGENTA}
+  __   ___  _  _  ___  ___  ___ ___  _  _  ___  ___
+  \\ \\ / / \\| \\| ||   \\| _ \\| __| _ \\| \\| ||_ _|| _ |
+   \\ V /| . | .  || |) |  _/| _|| v /| .  | | | |  _/
+    \\_/ |___|_|\\_||___/|_|  |___|_|_\\|_|\\_||___||_|   v{v}
+{C.RESET}{C.GREY}  VeePN (free extension proxy) -> local SOCKS5 / HTTP proxy{C.RESET}
+""")
+
+
+def ensure_utf8_console():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+class State:
+    """Tiny JSON state file (token / servers cache / system-proxy backup).
+
+    v1.2.4: writes are now ATOMIC (temp file + os.replace) and the parent
+    directory is created on demand.  The GUI writes this file from several
+    threads (core + quick-task workers); two concurrent plain open(...,"w")
+    calls could interleave and truncate the JSON, silently wiping the cached
+    token/udid and forcing a full re-registration.
+
+    v4.2.2: the whole State object is now guarded by a re-entrant lock.
+    The atomic write alone protected the FILE, not the dump: json.dump
+    iterating self.data while another thread's set() inserted a key raised
+    "dictionary changed size during iteration" and that write was lost.
+
+    v4.3.0: the file holds a live access token and proxy credentials, so
+    permissions are now explicit instead of accidental - the state file is
+    written 0600 and a freshly created state directory is 0700 (POSIX).
+    (mkstemp already produced 0600 by luck; this makes it a guarantee that
+    survives refactors, and locks the directory down too.)
+
+    v4.3.1: LOST-UPDATE fix.  The GUI core thread and the quick-task
+    threads each own their OWN State instance over the same file.  A plain
+    whole-dump save from instance B (whose in-memory snapshot was loaded
+    before instance A wrote a token/udid) silently wiped A's keys.  Saves
+    now re-read the on-disk JSON first and merge in every key this
+    instance does not know about, so concurrent writers can no longer
+    clobber each other's top-level keys.  (Nothing in the codebase ever
+    deletes a state key, so adopting unknown on-disk keys is safe.)
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.data = {}
+        self._lock = threading.RLock()
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+        except Exception:
+            self.data = {}
+
+    def save(self):
+        with self._lock:
+            try:
+                d = os.path.dirname(self.path)
+                if d:
+                    ensure_private_dir(d)     # private state directory
+                # v4.3.1: adopt keys written to disk by other State
+                # instances since we loaded (see class docstring).
+                try:
+                    with open(self.path, "r", encoding="utf-8") as f:
+                        on_disk = json.load(f)
+                    if isinstance(on_disk, dict):
+                        for k, v in on_disk.items():
+                            if k not in self.data:
+                                self.data[k] = v
+                except Exception:
+                    pass
+                fd, tmp = tempfile.mkstemp(prefix=".state-", suffix=".tmp",
+                                           dir=d or ".")
+                try:
+                    if os.name != "nt":
+                        try:
+                            os.fchmod(fd, 0o600)   # token/creds stay private
+                        except Exception:
+                            pass
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(self.data, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp, self.path)
+                except Exception:
+                    try:
+                        os.unlink(tmp)
+                    except Exception:
+                        pass
+                    raise
+            except Exception as e:
+                err(f"Could not save state file: {e}")
+
+    def get(self, key, default=None):
+        with self._lock:
+            return self.data.get(key, default)
+
+    def set(self, key, value):
+        with self._lock:
+            self.data[key] = value
+            self.save()
+
+
+def local_timezone_name() -> str:
+    """Best-effort IANA timezone name (what the extension sends)."""
+    tz = os.environ.get("TZ")
+    if tz:
+        return tz
+    try:
+        with open("/etc/timezone", "r", encoding="utf-8") as f:
+            tz = f.read().strip()
+            if tz:
+                return tz
+    except Exception:
+        pass
+    try:
+        import datetime
+        return datetime.datetime.now().astimezone().tzname() or "UTC"
+    except Exception:
+        return "UTC"
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def ensure_private_dir(path: str) -> None:
+    """v1.3.0/v4.3.0/v4.3.1: create `path` (with parents) as 0700 on POSIX.
+
+    Every directory that will hold sensitive files (state.json with the
+    access token, tunnel journals, worker logs) must go through this
+    instead of a bare os.makedirs, so the permissions stay tight no matter
+    WHICH module creates the directory first (the state file itself is
+    already written 0600 by State.save).
+
+    v4.3.1: a directory that already EXISTS but is looser than 0700 (e.g.
+    ~/.vpeen created 0775 by a v4.2.x build before the hardening landed) is
+    now tightened too - previously only freshly created directories were
+    chmod-ed, so upgrade installs kept a group/world-readable ~/.vpeen
+    holding the token file forever.
+    """
+    if not path:
+        return
+    try:
+        created = not os.path.isdir(path)
+        os.makedirs(path, exist_ok=True)
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            if mode != 0o700:
+                os.chmod(path, 0o700)
+        except OSError:
+            pass
+    except Exception:
+        pass

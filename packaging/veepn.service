@@ -1,0 +1,20 @@
+[Unit]
+Description=VPeeN Linux VPS proxy daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=veepn
+Group=veepn
+WorkingDirectory=/opt/veepn
+ExecStart=/opt/veepn/.venv/bin/python -m vpeen.daemon --config /etc/veepn/config.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/veepn /var/log/veepn
+
+[Install]
+WantedBy=multi-user.target
